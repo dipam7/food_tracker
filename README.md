@@ -1,5 +1,7 @@
 # Food Tracker
 
+![Uploading 9de7a5db-a8ab-46f7-97ba-f56be4b255b4.png…]()
+
 A system that automatically analyzes your food photos from Google Photos and provides nutritional summaries.
 
 ## Overview
