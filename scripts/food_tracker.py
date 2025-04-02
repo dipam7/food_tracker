@@ -1,8 +1,8 @@
 #\!/usr/bin/env python3
 """
-Food Tracker - Improved Two-Stage Analysis (Asynchronous)
+Food Tracker - Cached Version with Improved Schema Validation
 
-Uses proper schema validation with Instructor for robust extraction of nutritional information.
+Uses proper schema validation with Instructor and disk-based caching to minimize API calls.
 """
 
 import os
@@ -13,6 +13,7 @@ import shutil
 import asyncio
 import concurrent.futures
 import base64
+import hashlib
 from pathlib import Path
 import logging
 from dotenv import load_dotenv
@@ -39,6 +40,8 @@ PHOTOS_DIR = Path("retrieved_photos")
 PHOTOS_DIR.mkdir(exist_ok=True)
 RESULTS_DIR = Path("analysis_results")
 RESULTS_DIR.mkdir(exist_ok=True)
+CACHE_DIR = Path("api_cache")
+CACHE_DIR.mkdir(exist_ok=True)
 DEFAULT_PROVIDER = os.getenv("DEFAULT_PROVIDER", "openai").lower()
 MAX_WORKERS = 5  # Maximum number of concurrent workers
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -282,10 +285,47 @@ async def encode_images_parallel(image_paths):
     logger.info(f"Encoded {len(encoded_images)} images successfully")
     return encoded_images
 
+def get_image_hash(base64_image):
+    """Generate a hash for an image to use as cache key"""
+    return hashlib.md5(base64_image.encode()).hexdigest()
+
+def get_cached_result(image_hash, operation_type):
+    """Get a cached result for an image hash if it exists"""
+    cache_file = CACHE_DIR / f"{image_hash}_{operation_type}.json"
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error reading cache file {cache_file}: {str(e)}")
+    return None
+
+def save_to_cache(image_hash, operation_type, result):
+    """Save a result to the cache"""
+    cache_file = CACHE_DIR / f"{image_hash}_{operation_type}.json"
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(result, f)
+        return True
+    except Exception as e:
+        logger.error(f"Error writing cache file {cache_file}: {str(e)}")
+        return False
+
 async def classify_image_openai(image_path, base64_image):
     """Classify a single image as food or non-food with OpenAI"""
     if not base64_image:
         return {"error": "Failed to encode image", "is_food": None, "filename": image_path.name}
+    
+    # Generate hash for the image
+    image_hash = get_image_hash(base64_image)
+    
+    # Check cache
+    cache_result = get_cached_result(image_hash, "classify")
+    if cache_result is not None:
+        logger.info(f"Using cached classification result for image {image_hash[:8]}...")
+        # Add filename to the cached result
+        cache_result["filename"] = image_path.name
+        return cache_result
     
     try:
         import instructor
@@ -309,13 +349,20 @@ async def classify_image_openai(image_path, base64_image):
             ]
         )
         
-        return {
+        result = {
             "filename": image_path.name,
             "is_food": response.is_food,
             "confidence": 0.9,  # Placeholder confidence
             "provider": "openai",
             "timestamp": datetime.datetime.now().isoformat()
         }
+        
+        # Cache the result (without the filename to ensure consistent keys)
+        cache_key = result.copy()
+        del cache_key["filename"]
+        save_to_cache(image_hash, "classify", cache_key)
+        
+        return result
         
     except Exception as e:
         logger.error(f"OpenAI classification error for {image_path.name}: {str(e)}")
@@ -331,6 +378,17 @@ async def analyze_food_openai(image_path, base64_image, retry_count=0):
     """Analyze food details for an image already known to contain food"""
     if not base64_image:
         return {"error": "Failed to encode image", "filename": image_path.name}
+    
+    # Generate hash for the image
+    image_hash = get_image_hash(base64_image)
+    
+    # Check cache
+    cache_result = get_cached_result(image_hash, "analyze")
+    if cache_result is not None:
+        logger.info(f"Using cached food analysis result for image {image_hash[:8]}...")
+        # Add filename to the cached result
+        cache_result["filename"] = image_path.name
+        return cache_result
     
     try:
         import instructor
@@ -355,16 +413,23 @@ async def analyze_food_openai(image_path, base64_image, retry_count=0):
         )
         
         # With instructor, we get a properly structured response matching our FoodDetails model
-        return {
+        result = {
             "filename": image_path.name,
             "is_food": True,
             "meal_type": response.meal_type,
             "food_items": response.food_items,
-            "nutritional_info": response.nutritional_info.dict(),
+            "nutritional_info": response.nutritional_info.model_dump(),  # Use model_dump instead of dict
             "notes": response.notes,
             "provider": "openai",
             "timestamp": datetime.datetime.now().isoformat()
         }
+        
+        # Cache the result (without the filename to ensure consistent keys)
+        cache_key = result.copy()
+        del cache_key["filename"]
+        save_to_cache(image_hash, "analyze", cache_key)
+        
+        return result
         
     except Exception as e:
         logger.error(f"OpenAI food analysis error for {image_path.name}: {str(e)}")
@@ -558,7 +623,7 @@ def save_results_to_csv(combined_results):
 
 async def main_async():
     """Asynchronous main function that runs the full food tracking pipeline"""
-    logger.info("Starting Food Tracker (Improved Version)")
+    logger.info("Starting Food Tracker (Cached Version)")
     
     # Step 1: Authenticate with Google Photos
     logger.info("Authenticating with Google Photos...")
