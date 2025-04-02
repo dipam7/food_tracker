@@ -37,3 +37,8 @@ test_results/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+# Google API credentials
+credentials.json
+token.pickle
+retrieved_photos/
