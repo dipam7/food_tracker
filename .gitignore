@@ -42,3 +42,5 @@ test_results/
 credentials.json
 token.pickle
 retrieved_photos/
+api_cache/
+analysis_results/
